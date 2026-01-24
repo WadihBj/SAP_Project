@@ -35,14 +35,36 @@ export default function AssistantDashboard() {
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAssistant, setIsAssistant] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!user) {
+      navigate("/login");
+      return;
+    }
     loadData();
   }, [user]);
 
   const loadData = async () => {
     try {
+      // TESTING MODE: Skip assistant check
+      // const { data: assistantData, error: assistantError } = await supabase
+      //   .from("assistants")
+      //   .select("*")
+      //   .eq("user_id", user!.id)
+      //   .single();
+
+      // if (assistantError || !assistantData) {
+      //   console.error("Not an assistant:", assistantError);
+      //   setIsAssistant(false);
+      //   toast.error("You don't have assistant access. Please contact an administrator.");
+      //   navigate("/dashboard");
+      //   return;
+      // }
+
+      setIsAssistant(true);
+
       // Load pending inquiries
       const { data: inquiriesData, error: inquiriesError } = await supabase
         .from("inquiries")

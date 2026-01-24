@@ -129,6 +129,58 @@ export default function Login() {
             </p>
           </div>
 
+          {/* TEST MODE BUTTON */}
+          <div className="pt-4 border-t">
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              onClick={async () => {
+                setIsLoading(true);
+                try {
+                  // Try to login with test credentials
+                  await loginUser("test@example.com", "TestPassword123!");
+                  toast.success("Test mode - logged in!");
+                  navigate("/dashboard");
+                } catch (err) {
+                  // If test user doesn't exist, create one
+                  const { createClient } = await import("@supabase/supabase-js");
+                  const testEmail = `test${Date.now()}@example.com`;
+                  const testPassword = "TestPassword123!";
+                  
+                  const client = createClient(
+                    import.meta.env.VITE_SUPABASE_URL,
+                    import.meta.env.VITE_SUPABASE_ANON_KEY
+                  );
+                  
+                  try {
+                    await client.auth.signUp({
+                      email: testEmail,
+                      password: testPassword,
+                    });
+                    await loginUser(testEmail, testPassword);
+                    toast.success("Test account created and logged in!");
+                    navigate("/dashboard");
+                  } catch (signupErr) {
+                    toast.error("Could not create test account");
+                    console.error(signupErr);
+                  }
+                }
+                setIsLoading(false);
+              }}
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                "🧪 Demo/Test Mode"
+              )}
+            </Button>
+          </div>
+
           {/* Assistant link */}
           <div className="border-t border-border pt-4">
             <p className="text-center text-sm text-muted-foreground">

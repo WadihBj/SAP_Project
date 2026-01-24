@@ -99,10 +99,16 @@ export default function InquiryDetails() {
       setInquiry(inquiryData);
 
       // Load images
-      const { data: imagesData } = await supabase
+      const { data: imagesData, error: imagesError } = await supabase
         .from("inquiry_images")
         .select("*")
         .eq("inquiry_id", inquiryId);
+      
+      if (imagesError) {
+        console.error("Error loading images:", imagesError);
+      }
+      
+      console.log("Loaded images:", imagesData);
       setImages(imagesData || []);
 
       // Load matches

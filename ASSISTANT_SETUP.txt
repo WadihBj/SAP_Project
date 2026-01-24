@@ -1,0 +1,35 @@
+-- ============================================================================
+-- CREATE TEST ASSISTANT - COPY & PASTE THIS INTO SUPABASE SQL EDITOR
+-- ============================================================================
+
+-- First, check your existing users to get a user_id
+SELECT id, email FROM auth.users LIMIT 5;
+
+-- If you already have a user, use their ID below
+-- Replace 'USER_ID_FROM_ABOVE' with an actual UUID from the query above
+
+-- Then uncomment and run this to create an assistant:
+/*
+INSERT INTO assistants (
+  id,
+  user_id,
+  email,
+  name,
+  role,
+  department,
+  status,
+  created_at
+) VALUES (
+  gen_random_uuid(),
+  'USER_ID_FROM_ABOVE',
+  'assistant@test.com',
+  'Test Assistant',
+  'assistant',
+  'Lost & Found',
+  'active',
+  CURRENT_TIMESTAMP
+);
+*/
+
+-- Check assistants table
+SELECT * FROM assistants;
