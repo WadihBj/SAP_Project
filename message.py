@@ -99,21 +99,128 @@ Rules:
         return None
 
 
+def extract_item_with_gemini_image(image_bytes: bytes, mime_type: str, caption_text: str = ""):
+    """
+    Uses Gemini to analyze an incoming MMS image (+ optional caption) and extract a structured JSON item.
+    """
+    prompt = f"""
+You are a lost and found assistant. Analyze the attached IMAGE and extract item details.
+If the SMS caption provides extra context, use it.
+
+SMS caption (may be empty): "{caption_text}"
+
+Return ONLY a JSON object with these keys:
+- type: "LOST" or "FOUND"
+- title: Short descriptive name (3-5 words)
+- description: What you see + any details inferred from caption (color, brand, distinguishing marks, etc.)
+- category: One word category (e.g. Electronics, Pets, Wallet, Keys, Clothing)
+- address: Specific location or neighborhood mentioned in caption; if unknown set "Unknown"
+
+Rules:
+- If you cannot determine the type, default to "LOST".
+- If location is missing, set address to "Unknown".
+"""
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": image_bytes,
+                            }
+                        },
+                    ],
+                }
+            ],
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 0.2,
+            },
+        )
+
+        raw = (response.text or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        data = json.loads(raw)
+
+        if data.get("type") not in ("LOST", "FOUND"):
+            data["type"] = "LOST"
+
+        data.setdefault("title", "Reported via MMS")
+        data.setdefault("description", caption_text or "Image report")
+        data.setdefault("category", "General")
+        data.setdefault("address", "Unknown")
+
+        return data
+
+    except Exception as e:
+        print(f"Gemini Image Processing Error: {e}")
+        return None
+
+
+
 @app.route("/api/health", methods=['GET'])
 def health_check():
     return jsonify({"status": "ok", "message": "Backend is reachable"})
 
 @app.route("/sms", methods=['POST'])
 def sms_reply():
-    """Incoming SMS Webhook for Twilio."""
-    msg_body = request.form.get('Body', '')
-    from_number = request.form.get('From', '')
+    """Incoming SMS/MMS Webhook for Twilio."""
+    msg_body = request.form.get('Body', '') or ""
+    from_number = request.form.get('From', '') or ""
+    num_media = int(request.form.get('NumMedia', '0') or "0")
 
-    print(f"Processing SMS from {from_number}: {msg_body}")
+    print(f"Incoming from {from_number} | Body: {msg_body} | NumMedia: {num_media}")
 
-    # Process with AI
-    extracted = extract_item_with_gemini(msg_body)
-    
+    extracted = None
+
+    # If MMS has media, try processing the first image
+    if num_media > 0:
+        media_url = request.form.get('MediaUrl0')
+        media_type = request.form.get('MediaContentType0', '')
+
+        print(f"MediaUrl0: {media_url}")
+        print(f"MediaContentType0: {media_type}")
+
+        if media_url and media_type.startswith("image/"):
+            try:
+                # Twilio media URLs require Basic Auth with Account SID + Auth Token
+                r = requests.get(
+                    media_url,
+                    auth=HTTPBasicAuth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+                    timeout=20,
+                )
+                r.raise_for_status()
+                image_bytes = r.content
+
+                print("Downloaded bytes:", len(image_bytes))
+
+                extracted = extract_item_with_gemini_image(
+                    image_bytes=image_bytes,
+                    mime_type=media_type,
+                    caption_text=msg_body.strip(),
+                )
+                print("Extracted:", extracted)
+
+
+            except Exception as e:
+                print(f"Failed to download/process MMS image: {e}")
+                extracted = None
+        else:
+            print("MMS received but not an image/* type (or missing URL).")
+
+    # Fallback: normal SMS text parsing
+    if extracted is None:
+        extracted = extract_item_with_gemini(msg_body)
+        print("Extracted:", extracted)
+
+
+    # Register item
     if extracted:
         new_item = {
             "id": os.urandom(4).hex(),
@@ -122,18 +229,22 @@ def sms_reply():
             "description": extracted.get("description", msg_body),
             "category": extracted.get("category", "General"),
             "location": {"lat": 0, "lng": 0, "address": extracted.get("address", "Unknown")},
-            "date": "2024-05-20T10:30:00Z", 
-            "source": "SMS",
+            "date": "2024-05-20T10:30:00Z",
+            "source": "MMS" if num_media > 0 else "SMS",
             "contactInfo": from_number
         }
         item_registry.insert(0, new_item)
         response_text = f"FindIt AI: Registered your {new_item['type'].lower()} item '{new_item['title']}'. We'll alert you if a match is found!"
     else:
-        response_text = "FindIt AI: We received your message but couldn't parse the details. Try: 'I found a set of keys at the park'."
+        response_text = "FindIt AI: I received your message but couldn't extract details. Try adding a caption like 'Found keys near Concordia library' with the photo."
 
+    print("Reply text:", response_text)
     resp = MessagingResponse()
     resp.message(response_text)
     return str(resp)
+
+
+
 
 @app.route("/api/items", methods=['GET'])
 def get_items():
