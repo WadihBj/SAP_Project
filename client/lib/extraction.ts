@@ -174,6 +174,7 @@ function extractCategory(text: string): ItemCategory {
       "shoes",
     ],
     jewelry: ["ring", "bracelet", "necklace", "earring", "watch", "pendant"],
+    other: ["item", "thing", "object"],
   };
 
   for (const [cat, keywords] of Object.entries(categories)) {

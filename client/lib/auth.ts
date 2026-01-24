@@ -98,9 +98,9 @@ export async function getUserProfile(
   userId: string,
 ): Promise<UserProfile | null> {
   try {
-    const { data: user, error: userError } =
+    const { data: { user }, error: userError } =
       await supabase.auth.admin.getUserById(userId);
-    if (userError) return null;
+    if (userError || !user) return null;
 
     const { data: assistant } = await supabase
       .from("assistants")

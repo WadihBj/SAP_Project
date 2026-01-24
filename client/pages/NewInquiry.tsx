@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/lib/supabase";
 import { extractItemData } from "@/lib/extraction";
+import { checkRateLimit, recordInquiry } from "@/lib/fraud-prevention";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -13,6 +14,9 @@ import {
   Upload,
   X,
   Image as ImageIcon,
+  Shield,
+  CheckCircle,
+  Camera,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,6 +24,7 @@ export default function NewInquiry() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const [inquiryType, setInquiryType] = useState<"lost" | "found">("lost");
   const [title, setTitle] = useState("");
@@ -29,6 +34,7 @@ export default function NewInquiry() {
   const [images, setImages] = useState<File[]>([]);
   const [imagePreview, setImagePreview] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [descriptionQuality, setDescriptionQuality] = useState<"poor" | "fair" | "good">("poor");
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -39,6 +45,22 @@ export default function NewInquiry() {
       return;
     }
 
+    addImagesToForm(validFiles);
+  };
+
+  const handleCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    const validFiles = files.filter((file) => file.type.startsWith("image/"));
+
+    if (validFiles.length + images.length > 5) {
+      toast.error("Maximum 5 images allowed");
+      return;
+    }
+
+    addImagesToForm(validFiles);
+  };
+
+  const addImagesToForm = (validFiles: File[]) => {
     setImages([...images, ...validFiles]);
 
     // Create previews
@@ -49,11 +71,26 @@ export default function NewInquiry() {
       };
       reader.readAsDataURL(file);
     });
+
+    toast.success(`Added ${validFiles.length} photo(s)`);
   };
 
   const removeImage = (index: number) => {
     setImages(images.filter((_, i) => i !== index));
     setImagePreview(imagePreview.filter((_, i) => i !== index));
+  };
+
+  // Track description quality for fraud detection
+  const updateDescriptionQuality = (text: string) => {
+    setDescription(text);
+    
+    if (text.length > 150) {
+      if (text.includes("color") && text.includes("condition")) {
+        setDescriptionQuality("good");
+      } else if (text.length > 100) {
+        setDescriptionQuality("fair");
+      }
+    }
   };
 
   const uploadImages = async (inquiryId: string): Promise<void> => {
@@ -93,6 +130,13 @@ export default function NewInquiry() {
       return;
     }
 
+    // Check rate limiting
+    const rateLimit = checkRateLimit(user!.id);
+    if (!rateLimit.allowed) {
+      toast.error(rateLimit.reason || "Too many inquiries. Please try again later.");
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
@@ -118,12 +162,21 @@ export default function NewInquiry() {
             date_lost_found: dateLostFound || null,
             status: "submitted",
             extracted_attributes: extractedData,
+            description_quality: descriptionQuality,
+            image_count: images.length,
           },
         ])
         .select()
         .single();
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        console.error("Supabase insert error:", insertError);
+        throw new Error(`Database error: ${insertError.message || JSON.stringify(insertError)}`);
+      }
+
+      if (!inquiryData) {
+        throw new Error("No data returned from insert");
+      }
 
       // Upload images if any
       if (images.length > 0) {
@@ -131,7 +184,7 @@ export default function NewInquiry() {
       }
 
       // Create status history entry
-      await supabase.from("inquiry_status_history").insert([
+      const { error: historyError } = await supabase.from("inquiry_status_history").insert([
         {
           inquiry_id: inquiryData.id,
           old_status: null,
@@ -140,12 +193,20 @@ export default function NewInquiry() {
         },
       ]);
 
+      if (historyError) {
+        console.error("Status history error:", historyError);
+        throw new Error(`Status history error: ${historyError.message}`);
+      }
+
+      // Record inquiry for rate limiting
+      recordInquiry(user!.id);
+
       toast.success("Inquiry submitted! Our team will review it shortly.");
       navigate("/dashboard");
     } catch (err) {
       console.error("Error submitting inquiry:", err);
-      const errMsg =
-        err instanceof Error ? err.message : "Failed to submit inquiry";
+      const errMsg = err instanceof Error ? err.message : JSON.stringify(err);
+      console.error("Full error details:", errMsg);
       toast.error(errMsg);
     } finally {
       setIsSubmitting(false);
@@ -245,11 +306,29 @@ export default function NewInquiry() {
                   id="desc"
                   placeholder="Describe the item in detail. Include colors, materials, condition, distinctive marks, and contents."
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={(e) => updateDescriptionQuality(e.target.value)}
                   className="min-h-32"
                   disabled={isSubmitting}
                   required
                 />
+                <div className="mt-2 flex items-center gap-2">
+                  {descriptionQuality === "good" && (
+                    <div className="flex items-center gap-1 text-sm text-green-600 dark:text-green-400">
+                      <CheckCircle className="w-4 h-4" />
+                      Good description quality
+                    </div>
+                  )}
+                  {descriptionQuality === "fair" && (
+                    <div className="text-sm text-amber-600 dark:text-amber-400">
+                      Fair - Add more details for better matches
+                    </div>
+                  )}
+                  {descriptionQuality === "poor" && description.length > 20 && (
+                    <div className="text-sm text-muted-foreground">
+                      Add more details (color, condition, distinctive features)
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Location */}
@@ -301,48 +380,89 @@ export default function NewInquiry() {
                   </span>
                 </label>
 
-                {/* Upload Area */}
+                {/* Upload and Camera Buttons */}
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center justify-center gap-2 p-4 border-2 border-border rounded-lg hover:border-primary hover:bg-primary/5 transition-colors"
+                    disabled={isSubmitting}
+                  >
+                    <Upload className="w-5 h-5" />
+                    <span className="font-medium text-sm">Upload Photos</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="flex items-center justify-center gap-2 p-4 border-2 border-border rounded-lg hover:border-primary hover:bg-primary/5 transition-colors"
+                    disabled={isSubmitting}
+                  >
+                    <Camera className="w-5 h-5" />
+                    <span className="font-medium text-sm">Take Photo</span>
+                  </button>
+                </div>
+
+                {/* File Input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  onChange={handleImageSelect}
+                  className="hidden"
+                  disabled={isSubmitting}
+                />
+
+                {/* Camera Input */}
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleCameraCapture}
+                  className="hidden"
+                  disabled={isSubmitting}
+                />
+
+                {/* Upload Area (Drag & Drop) */}
                 <div
                   onClick={() => fileInputRef.current?.click()}
-                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary transition-colors"
+                  className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary transition-colors mb-4"
                 >
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    onChange={handleImageSelect}
-                    className="hidden"
-                    disabled={isSubmitting}
-                  />
-                  <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
+                  <ImageIcon className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
                   <p className="font-medium text-foreground">
-                    Click to upload images
+                    Click to upload or take photos
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    or drag and drop
+                    or drag and drop images here
                   </p>
                 </div>
 
                 {/* Image Previews */}
                 {images.length > 0 && (
-                  <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                    {imagePreview.map((preview, idx) => (
-                      <div key={idx} className="relative group">
-                        <img
-                          src={preview}
-                          alt={`Preview ${idx + 1}`}
-                          className="w-full h-32 object-cover rounded-lg"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeImage(idx)}
-                          className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ))}
+                  <div>
+                    <p className="text-sm font-medium text-foreground mb-3">
+                      {images.length} photo{images.length !== 1 ? "s" : ""} added
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                      {imagePreview.map((preview, idx) => (
+                        <div key={idx} className="relative group">
+                          <img
+                            src={preview}
+                            alt={`Preview ${idx + 1}`}
+                            className="w-full h-32 object-cover rounded-lg"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeImage(idx)}
+                            className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

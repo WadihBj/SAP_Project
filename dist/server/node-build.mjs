@@ -22,7 +22,7 @@ function createServer() {
   return app2;
 }
 const app = createServer();
-const port = process.env.PORT || 3e3;
+const port = parseInt(process.env.PORT || "3000", 10);
 const __dirname = import.meta.dirname;
 const distPath = path.join(__dirname, "../spa");
 app.use(express.static(distPath));

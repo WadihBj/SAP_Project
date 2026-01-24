@@ -1,9 +1,12 @@
 import { supabase } from "./supabase";
+import { assessFraudRisk, generateOwnershipQuestions } from "./fraud-prevention";
 
 interface MatchResult {
   inventoryItemId: string;
   inquiryId: string;
   confidenceScore: number;
+  finalConfidence: number;
+  requiresVerification: boolean;
   matchingDetails: {
     categoryMatch: boolean;
     categoryScore: number;
@@ -18,6 +21,14 @@ interface MatchResult {
     distinctiveMarksMatch: boolean;
     distinctiveMarksScore: number;
   };
+}
+
+interface FollowUpQuestion {
+  id: string;
+  question: string;
+  type: "multiple_choice" | "text" | "number";
+  options?: string[];
+  required: boolean;
 }
 
 export async function findMatches(inquiryId: string): Promise<MatchResult[]> {
@@ -39,6 +50,18 @@ export async function findMatches(inquiryId: string): Promise<MatchResult[]> {
 
     if (inventoryError) throw inventoryError;
 
+    // Get user history for fraud assessment
+    const { data: userHistory } = await supabase
+      .from("inquiries")
+      .select("*")
+      .eq("user_id", inquiry.user_id);
+
+    const userHistoryData = {
+      reportCount: userHistory?.length || 0,
+      confirmedMatches: 0,
+      inquiryCategories: [],
+    };
+
     // Calculate matches
     const matches: MatchResult[] = [];
 
@@ -47,12 +70,22 @@ export async function findMatches(inquiryId: string): Promise<MatchResult[]> {
 
       // Only include matches with confidence >= 0.5
       if (matchResult.confidenceScore >= 0.5) {
-        matches.push(matchResult);
+        // Apply fraud risk assessment
+        const fraudRisk = assessFraudRisk(inquiry, matchResult.confidenceScore, userHistoryData);
+        
+        // Adjust final confidence based on fraud risk
+        const finalConfidence = matchResult.confidenceScore * (1 - fraudRisk.riskScore / 200);
+        
+        matches.push({
+          ...matchResult,
+          finalConfidence,
+          requiresVerification: fraudRisk.riskScore > 40,
+        });
       }
     }
 
     // Sort by confidence score (highest first)
-    matches.sort((a, b) => b.confidenceScore - a.confidenceScore);
+    matches.sort((a, b) => b.finalConfidence - a.finalConfidence);
 
     return matches;
   } catch (err) {
@@ -151,6 +184,8 @@ function calculateMatchScore(inquiry: any, inventoryItem: any): MatchResult {
     inventoryItemId: inventoryItem.id,
     inquiryId: inquiry.id,
     confidenceScore: Math.round(confidenceScore * 100) / 100,
+    finalConfidence: Math.round(confidenceScore * 100) / 100,
+    requiresVerification: confidenceScore < 0.7,
     matchingDetails: {
       categoryMatch: categoryScore === 1,
       categoryScore,
@@ -308,4 +343,121 @@ export async function generateVerificationQuestions(
   }
 
   return questions.slice(0, 3); // Return top 3 questions
+}
+/**
+ * Generate follow-up questions to narrow down matches when there are more than 5
+ */
+export async function generateFollowUpQuestions(
+  inquiry: any,
+  matchCount: number,
+): Promise<FollowUpQuestion[]> {
+  if (matchCount <= 5) {
+    return [];
+  }
+
+  const questions: FollowUpQuestion[] = [];
+  const category = inquiry.extracted_attributes?.itemIdentity?.category;
+
+  // Add category-specific follow-up questions
+  switch (category) {
+    case "phone":
+      questions.push({
+        id: "phone-color",
+        question: "What color is the phone?",
+        type: "multiple_choice",
+        options: ["Black", "White", "Silver", "Gold", "Blue", "Red", "Other"],
+        required: true,
+      });
+      questions.push({
+        id: "phone-size",
+        question: "What is the approximate screen size?",
+        type: "multiple_choice",
+        options: ["Small (4-5\")", "Medium (5-6\")", "Large (6-7\")", "Extra Large (7\"+)"],
+        required: true,
+      });
+      break;
+    case "wallet":
+      questions.push({
+        id: "wallet-color",
+        question: "What is the primary color?",
+        type: "multiple_choice",
+        options: ["Black", "Brown", "Red", "Blue", "Other"],
+        required: true,
+      });
+      questions.push({
+        id: "wallet-type",
+        question: "What type of wallet is it?",
+        type: "multiple_choice",
+        options: ["Bifold", "Trifold", "Money Clip", "Card Case", "Other"],
+        required: true,
+      });
+      break;
+    case "keys":
+      questions.push({
+        id: "keys-count",
+        question: "Approximately how many keys?",
+        type: "number",
+        required: true,
+      });
+      questions.push({
+        id: "keys-keychain",
+        question: "Describe the keychain material/design:",
+        type: "text",
+        required: true,
+      });
+      break;
+    case "laptop":
+      questions.push({
+        id: "laptop-brand",
+        question: "What brand is the laptop?",
+        type: "multiple_choice",
+        options: ["Apple", "Dell", "HP", "Lenovo", "ASUS", "Other"],
+        required: true,
+      });
+      questions.push({
+        id: "laptop-screen",
+        question: "What is the screen size?",
+        type: "multiple_choice",
+        options: ['13"', '14"', '15"', '16"', '17"', "Other"],
+        required: true,
+      });
+      break;
+    default:
+      questions.push({
+        id: "color-followup",
+        question: "What is the primary color of the item?",
+        type: "text",
+        required: true,
+      });
+      questions.push({
+        id: "condition-followup",
+        question: "What condition was it in?",
+        type: "multiple_choice",
+        options: ["Like New", "Good", "Fair", "Poor"],
+        required: true,
+      });
+  }
+
+  return questions.slice(0, 2); // Return up to 2 follow-up questions
+}
+
+/**
+ * Save follow-up question responses to narrow down matches
+ */
+export async function saveFollowUpResponses(
+  inquiryId: string,
+  responses: Record<string, string>,
+): Promise<void> {
+  try {
+    await supabase.from("inquiry_follow_ups").insert([
+      {
+        inquiry_id: inquiryId,
+        responses,
+        created_at: new Date().toISOString(),
+      },
+    ]);
+  } catch (err) {
+    console.error("Error saving follow-up responses:", err);
+    throw err;
+  }
 }
