@@ -1,100 +1,65 @@
-# Lost & Found - Assistant Portal
+# LOFO – Lost & Found Assistant
 
-A web application for assistants to manage lost and found items using Supabase.
+Web + SMS flow to log lost-item inquiries, auto-generate short pickup IDs, match them against a catalog, and let staff resolve items from a React dashboard.
 
 ## Features
+- Upload lost items with images, names, descriptions
+- Auto `short_id` + inquiry number for follow-up
+- AI parsing of SMS/MMS into structured inquiries
+- Search/filter catalog; mark items found with founder name + linked inquiry ID
+- Users can text `<SHORT_ID> status` to check progress
 
-- 📤 Upload lost items with pictures, names, and descriptions
-- 🔍 Search and filter items
-- ✅ Mark items as found with founder name
-- 📱 Responsive design
+## Stack
+- Frontend: React 18, TypeScript, Vite, Tailwind
+- Backend: Flask + Twilio SMS/MMS webhook
+- Data: Supabase (Postgres + storage), optional Gemini for text/image parsing
 
-## Setup Instructions
-
-### 1. Install Dependencies
-
+## Quick Start (frontend)
 ```bash
 npm install
-```
-
-### 2. Set Up Supabase Database
-
-You need to create the following table and storage bucket in your Supabase project:
-
-#### Create the `lost_items` table:
-
-Run this SQL in your Supabase SQL Editor:
-
-```sql
--- Create lost_items table
-CREATE TABLE lost_items (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
-  item_name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  image_url TEXT,
-  status TEXT NOT NULL DEFAULT 'lost' CHECK (status IN ('lost', 'found')),
-  founder_name TEXT,
-  found_at TIMESTAMP WITH TIME ZONE
-);
-
--- Enable Row Level Security (optional, adjust policies as needed)
-ALTER TABLE lost_items ENABLE ROW LEVEL SECURITY;
-
--- Create a policy that allows all operations (adjust based on your security needs)
-CREATE POLICY "Allow all operations" ON lost_items
-  FOR ALL
-  USING (true)
-  WITH CHECK (true);
-```
-
-#### Create the Storage Bucket:
-
-1. Go to Storage in your Supabase dashboard
-2. Create a new bucket named `item-images`
-3. Make it public (or adjust policies as needed)
-4. Add a policy to allow uploads:
-
-```sql
--- Storage policy for item-images bucket
-CREATE POLICY "Allow public uploads" ON storage.objects
-  FOR INSERT
-  WITH CHECK (bucket_id = 'item-images');
-
-CREATE POLICY "Allow public access" ON storage.objects
-  FOR SELECT
-  USING (bucket_id = 'item-images');
-```
-
-### 3. Environment Variables
-
-The `.env.local` file should already be configured with your Supabase credentials. If not, create it:
-
-```
-VITE_SUPABASE_URL=https://crlqdhmuzdndlwntckya.supabase.co
-VITE_SUPABASE_ANON_KEY=sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq
-```
-
-### 4. Run the Development Server
-
-```bash
 npm run dev
 ```
+Frontend runs on Vite’s default port (check console output).
 
-The application will be available at `http://127.0.0.1:8080`
+## Backend (Flask)
+```bash
+cd server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python message.py
+```
+
+## Environment
+Frontend (`.env.local`):
+```
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_API_URL=http://localhost:5000   # Flask API
+```
+Backend (`.env` or export):
+```
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+SUPABASE_URL=...
+SUPABASE_SERVICE_ROLE_KEY=...
+GEMINI_API_KEY=...           # optional for AI parsing
+```
+
+## Database
+Run `supabase-setup.sql` in the Supabase SQL editor. It creates:
+- `lost_items` with status/founder info
+- `user_inquiries` with `short_id` + `inquiry_number`
+- `inquiry_matches` linking items ↔ inquiries
+- Storage bucket `item-images` with permissive policies
 
 ## Usage
+- Add items via dashboard.
+- Mark as found → enter founder name + user short_id; dashboard shows inquiry ID beside founder.
+- Users text a report → they get a short_id back; texting `<SHORT_ID> status` returns current status.
 
-1. **Upload Lost Items**: Fill in the item name, description, and optionally upload a picture
-2. **View All Items**: All items are displayed in a grid below the upload form
-3. **Search Items**: Use the search bar to filter items by name or description
-4. **Mark as Found**: Click "Mark as Found" on any lost item, then enter the founder's name
+## What’s next
+- Notify users when a match is approved
+- Better image similarity for matches
+- Public “check item” page for self-serve lookups
 
-## Technologies
-
-- React 18
-- TypeScript
-- Vite
-- Tailwind CSS
-- Supabase
-- React Router
