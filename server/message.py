@@ -15,11 +15,13 @@ app = Flask(__name__)
 CORS(app)
 
 # Environment variables
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key for backend
+TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
+TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
+SUPABASE_URL = "https://crlqdhmuzdndlwntckya.supabase.co/"
+SUPABASE_KEY = "sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq"
+# SUPABASE_URL = os.environ.get("SUPABASE_URL")
+# SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")  
 
 # Initialize clients
 if not GEMINI_API_KEY:
