@@ -16,10 +16,10 @@ import base64
 app = Flask(__name__)
 CORS(app)
 
-# Environment variables
-TWILIO_ACCOUNT_SID = "ACfc85ee69ba8d995855ca80ad1ea313b1"
-TWILIO_AUTH_TOKEN = "b17e89c9c6a6113d3b3dddf9adec53cf"
-GEMINI_API_KEY = "AIzaSyBwKunz3TWom3cMjyc7Lza0LmREOgWgqL4"
+# Environment variables (prefer env, fall back to None)
+TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
+TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
 SUPABASE_URL = "https://crlqdhmuzdndlwntckya.supabase.co/"
 SUPABASE_KEY = "sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq"
 
@@ -439,8 +439,50 @@ def sms_reply():
 
     print(f"Incoming from {from_number} | Body: {msg_body} | NumMedia: {num_media}")
 
+    # Quick status lookup: "<SHORT_ID> status"
+    normalized_body = msg_body.strip()
+    status_match = re.match(r"^([A-Za-z0-9]{4,10})\s+status$", normalized_body, re.IGNORECASE)
+    if status_match:
+        lookup_id = status_match.group(1).upper()
+        if supabase:
+            try:
+                inquiry = supabase.table("user_inquiries") \
+                    .select("status, inquiry_number, short_id") \
+                    .eq("short_id", lookup_id) \
+                    .single() \
+                    .execute()
+
+                if inquiry.data:
+                    status_val = inquiry.data.get("status", "unknown").title()
+                    inquiry_number = inquiry.data.get("inquiry_number", "N/A")
+                    resp = MessagingResponse()
+                    resp.message(f"FindIt AI: Status for {lookup_id} (Ref #{inquiry_number}): {status_val}")
+                    return str(resp)
+                else:
+                    resp = MessagingResponse()
+                    resp.message(f"FindIt AI: I couldn't find an inquiry with ID {lookup_id}. Please check and try again.")
+                    return str(resp)
+            except Exception as e:
+                print(f"Status lookup failed for {lookup_id}: {e}")
+                resp = MessagingResponse()
+                resp.message("FindIt AI: Sorry, I couldn't retrieve that status right now. Please try again later.")
+                return str(resp)
+        else:
+            resp = MessagingResponse()
+            resp.message("FindIt AI: Status lookup is unavailable (database not configured).")
+            return str(resp)
+
     extracted = None
     image_urls = []
+    short_id: Optional[str] = None
+
+    # Always generate a short_id to return to the user, even if parsing fails
+    try:
+        short_id = ensure_unique_short_id()
+    except Exception as e:
+        # If we cannot guarantee uniqueness (e.g., Supabase down), still generate a local ID
+        print(f"Failed to generate short_id uniquely, falling back: {e}")
+        short_id = generate_short_id()
 
     # Process MMS images
     if num_media > 0:
@@ -451,9 +493,10 @@ def sms_reply():
             if media_url and media_type.startswith("image/"):
                 try:
                     # Download image from Twilio
+                    auth = HTTPBasicAuth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN else None
                     r = requests.get(
                         media_url,
-                        auth=HTTPBasicAuth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+                        auth=auth,
                         timeout=20,
                     )
                     r.raise_for_status()
@@ -483,19 +526,16 @@ def sms_reply():
     inquiry_id = None
     inquiry_number = None
     
-    if supabase and extracted:
+    if supabase:
         try:
-            # Generate unique short ID
-            short_id = ensure_unique_short_id()
-            
             inquiry_data = {
                 "phone_number": from_number,
                 "sms_text": msg_body,
                 "image_urls": image_urls,
-                "extracted_title": extracted.get("title", "Reported via SMS"),
-                "extracted_description": extracted.get("description", msg_body),
-                "extracted_category": extracted.get("category", "General"),
-                "extracted_type": extracted.get("type", "LOST"),
+                "extracted_title": (extracted or {}).get("title", "Reported via SMS"),
+                "extracted_description": (extracted or {}).get("description", msg_body),
+                "extracted_category": (extracted or {}).get("category", "General"),
+                "extracted_type": (extracted or {}).get("type", "LOST"),
                 "status": "submitted",
                 "short_id": short_id
             }
@@ -508,8 +548,8 @@ def sms_reply():
                 # Get short_id from result or use the one we generated
                 returned_short_id = result.data[0].get('short_id', short_id)
                 
-                # Find matches using AI
-                matches = find_matches_with_ai(extracted, inquiry_id)
+                # Find matches using AI when we have extracted data
+                matches = find_matches_with_ai(extracted, inquiry_id) if extracted else []
                 
                 # Calculate average confidence if matches found
                 if matches:
@@ -523,16 +563,16 @@ def sms_reply():
                 response_text = f"FindIt AI: Thank you! Your inquiry has been registered.\n\nYour Inquiry ID: {returned_short_id}\nReference: #{inquiry_number}\n\n{'We found potential matches!' if matches else 'We\'re checking our database for matches.'}"
             else:
                 # Even if insert failed, try to provide the short_id if we have it
-                response_text = f"FindIt AI: Thank you for your inquiry. We're processing it now. Your Inquiry ID: {short_id}"
+                response_text = f"FindIt AI: Thank you for your inquiry. We're processing it now. Your Inquiry ID: {short_id or 'N/A'}"
         except Exception as e:
             print(f"Error saving inquiry: {e}")
             # Try to include short_id even in error case if we generated it
-            if 'short_id' in locals():
+            if short_id:
                 response_text = f"FindIt AI: I received your message. Processing... Your Inquiry ID: {short_id}"
             else:
                 response_text = "FindIt AI: I received your message. Processing..."
     else:
-        response_text = "FindIt AI: I received your message but couldn't extract details. Try adding a caption like 'Found keys near Concordia library' with the photo."
+        response_text = f"FindIt AI: I received your message. Your Inquiry ID: {short_id or 'N/A'}\nWe're processing it now."
 
     resp = MessagingResponse()
     resp.message(response_text)
