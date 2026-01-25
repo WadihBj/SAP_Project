@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_lost_items_created_at ON lost_items(created_at DE
 CREATE TABLE IF NOT EXISTS user_inquiries (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   inquiry_number SERIAL UNIQUE NOT NULL,
+  short_id TEXT UNIQUE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL,
   phone_number TEXT NOT NULL,
   sms_text TEXT,

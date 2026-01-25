@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import random
+import string
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from twilio.twiml.messaging_response import MessagingResponse
@@ -17,11 +19,9 @@ CORS(app)
 # Environment variables
 TWILIO_ACCOUNT_SID = "ACfc85ee69ba8d995855ca80ad1ea313b1"
 TWILIO_AUTH_TOKEN = "b17e89c9c6a6113d3b3dddf9adec53cf"
-GEMINI_API_KEY = "AIzaSyCm0j9WZy04FGcNZerH69_vVqT-gdA6UCg"
+GEMINI_API_KEY = "AIzaSyBwKunz3TWom3cMjyc7Lza0LmREOgWgqL4"
 SUPABASE_URL = "https://crlqdhmuzdndlwntckya.supabase.co/"
 SUPABASE_KEY = "sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq"
-# SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")  
 
 # Initialize clients
 if not GEMINI_API_KEY:
@@ -172,6 +172,31 @@ def upload_image_to_supabase(image_bytes: bytes, file_name: str) -> Optional[str
         return None
     
     return None
+
+
+def generate_short_id() -> str:
+    """Generate a unique 5-character alphanumeric ID."""
+    characters = string.ascii_uppercase + string.digits
+    # Exclude confusing characters: 0, O, I, 1
+    characters = characters.replace('0', '').replace('O', '').replace('I', '').replace('1', '')
+    return ''.join(random.choices(characters, k=5))
+
+
+def ensure_unique_short_id() -> str:
+    """Generate a unique short_id that doesn't exist in the database."""
+    if not supabase:
+        return generate_short_id()
+    
+    max_attempts = 10
+    for _ in range(max_attempts):
+        short_id = generate_short_id()
+        # Check if it exists
+        result = supabase.table("user_inquiries").select("id").eq("short_id", short_id).execute()
+        if not result.data or len(result.data) == 0:
+            return short_id
+    
+    # Fallback: add random suffix if all attempts fail
+    return generate_short_id() + str(random.randint(10, 99))[:1]
 
 
 def find_matches_with_ai(inquiry_data: Dict, inquiry_id: str) -> List[Dict]:
@@ -460,6 +485,9 @@ def sms_reply():
     
     if supabase and extracted:
         try:
+            # Generate unique short ID
+            short_id = ensure_unique_short_id()
+            
             inquiry_data = {
                 "phone_number": from_number,
                 "sms_text": msg_body,
@@ -468,7 +496,8 @@ def sms_reply():
                 "extracted_description": extracted.get("description", msg_body),
                 "extracted_category": extracted.get("category", "General"),
                 "extracted_type": extracted.get("type", "LOST"),
-                "status": "submitted"
+                "status": "submitted",
+                "short_id": short_id
             }
             
             result = supabase.table("user_inquiries").insert(inquiry_data).execute()
@@ -476,6 +505,8 @@ def sms_reply():
             if result.data and len(result.data) > 0:
                 inquiry_id = result.data[0]['id']
                 inquiry_number = result.data[0]['inquiry_number']
+                # Get short_id from result or use the one we generated
+                returned_short_id = result.data[0].get('short_id', short_id)
                 
                 # Find matches using AI
                 matches = find_matches_with_ai(extracted, inquiry_id)
@@ -485,15 +516,21 @@ def sms_reply():
                     avg_confidence = sum(m.get('confidence_score', 0) for m in matches) / len(matches)
                     supabase.table("user_inquiries").update({
                         "ai_confidence": avg_confidence,
-                        "status": "under-review"
+                        "status": "matched"
                     }).eq("id", inquiry_id).execute()
                 
-                response_text = f"FindIt AI: Thank you! Your inquiry #{inquiry_number} has been registered. {'We found potential matches!' if matches else 'We\'re checking our database for matches.'}"
+                # Always include the inquiry ID in the response
+                response_text = f"FindIt AI: Thank you! Your inquiry has been registered.\n\nYour Inquiry ID: {returned_short_id}\nReference: #{inquiry_number}\n\n{'We found potential matches!' if matches else 'We\'re checking our database for matches.'}"
             else:
-                response_text = "FindIt AI: Thank you for your inquiry. We're processing it now."
+                # Even if insert failed, try to provide the short_id if we have it
+                response_text = f"FindIt AI: Thank you for your inquiry. We're processing it now. Your Inquiry ID: {short_id}"
         except Exception as e:
             print(f"Error saving inquiry: {e}")
-            response_text = "FindIt AI: I received your message. Processing..."
+            # Try to include short_id even in error case if we generated it
+            if 'short_id' in locals():
+                response_text = f"FindIt AI: I received your message. Processing... Your Inquiry ID: {short_id}"
+            else:
+                response_text = "FindIt AI: I received your message. Processing..."
     else:
         response_text = "FindIt AI: I received your message but couldn't extract details. Try adding a caption like 'Found keys near Concordia library' with the photo."
 

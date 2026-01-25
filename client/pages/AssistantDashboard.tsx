@@ -25,6 +25,7 @@ export default function AssistantDashboard() {
   // Mark as found state
   const [foundItemId, setFoundItemId] = useState<string | null>(null);
   const [founderName, setFounderName] = useState("");
+  const [inquiryShortId, setInquiryShortId] = useState("");
   
   // Edit item state
   const [editingItem, setEditingItem] = useState<LostItem | null>(null);
@@ -197,8 +198,14 @@ export default function AssistantDashboard() {
       return;
     }
 
+    if (!inquiryShortId.trim()) {
+      alert("Please enter the user inquiry ID");
+      return;
+    }
+
     try {
-      const { error } = await supabase
+      // Update the lost item
+      const { error: itemError } = await supabase
         .from("lost_items")
         .update({
           status: "found",
@@ -207,18 +214,57 @@ export default function AssistantDashboard() {
         })
         .eq("id", foundItemId);
 
-      if (error) throw error;
+      if (itemError) throw itemError;
+
+      // Find and mark the inquiry as resolved (required)
+      const { data: inquiryData, error: inquiryError } = await supabase
+        .from("user_inquiries")
+        .select("id, inquiry_number, short_id")
+        .eq("short_id", inquiryShortId.trim().toUpperCase())
+        .single();
+
+      if (inquiryError) {
+        console.error("Error finding inquiry:", inquiryError);
+        alert(`Could not find inquiry with ID: ${inquiryShortId.trim().toUpperCase()}. Please check the ID and try again.`);
+        return;
+      }
+
+      if (!inquiryData) {
+        alert(`Inquiry with ID ${inquiryShortId.trim().toUpperCase()} not found. Please check the ID and try again.`);
+        return;
+      }
+
+      // Mark inquiry as resolved
+      const { error: updateError } = await supabase
+        .from("user_inquiries")
+        .update({
+          status: "resolved",
+          resolved_at: new Date().toISOString(),
+        })
+        .eq("id", inquiryData.id);
+
+      if (updateError) {
+        console.error("Error updating inquiry:", updateError);
+        alert("Item marked as found, but failed to update inquiry status. Please try again.");
+        return;
+      }
 
       setFoundItemId(null);
       setFounderName("");
+      setInquiryShortId("");
       await loadItems();
+      
+      // Reload inquiries if we're on that tab
+      if (activeTab === "inquiries") {
+        await loadInquiries();
+      }
       
       // Reload matches if an inquiry is currently selected
       if (selectedInquiry) {
         await loadInquiryMatches(selectedInquiry.id);
       }
       
-      alert("Item marked as found!");
+      alert(`Success! Item marked as found and inquiry ${inquiryShortId.trim().toUpperCase()} (Ref: #${inquiryData.inquiry_number}) has been marked as resolved.`);
     } catch (error) {
       console.error("Error marking item as found:", error);
       alert("Error updating item. Please try again.");
@@ -462,12 +508,13 @@ export default function AssistantDashboard() {
 
   const filteredInquiries = inquiries.filter((inquiry) => {
     if (!inquirySearch) return true;
-    const search = inquirySearch.toLowerCase();
+    const search = inquirySearch.toUpperCase();
     return (
-      inquiry.inquiry_number.toString().includes(search) ||
-      inquiry.phone_number.toLowerCase().includes(search) ||
-      inquiry.extracted_title?.toLowerCase().includes(search) ||
-      inquiry.extracted_description?.toLowerCase().includes(search)
+      inquiry.inquiry_number.toString().includes(inquirySearch) ||
+      inquiry.short_id?.toUpperCase().includes(search) ||
+      inquiry.phone_number.toLowerCase().includes(inquirySearch.toLowerCase()) ||
+      inquiry.extracted_title?.toLowerCase().includes(inquirySearch.toLowerCase()) ||
+      inquiry.extracted_description?.toLowerCase().includes(inquirySearch.toLowerCase())
     );
   });
 
@@ -686,6 +733,23 @@ export default function AssistantDashboard() {
                   autoFocus
                 />
               </div>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  User Inquiry ID *
+                </label>
+                <input
+                  type="text"
+                  value={inquiryShortId}
+                  onChange={(e) => setInquiryShortId(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                  placeholder="Enter 5-character inquiry ID (e.g., A1B2C)"
+                  maxLength={5}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent uppercase font-mono"
+                  required
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Required: The inquiry will be marked as resolved when the item is marked as found
+                </p>
+              </div>
               <div className="flex gap-3">
                 <button
                   onClick={handleMarkAsFound}
@@ -697,12 +761,16 @@ export default function AssistantDashboard() {
                   onClick={() => {
                     setFoundItemId(null);
                     setFounderName("");
+                    setInquiryShortId("");
                   }}
                   className="flex-1 bg-gray-300 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-400 transition-colors"
                 >
                   Cancel
                 </button>
               </div>
+              <p className="text-xs text-gray-500 mt-3 text-center">
+                * Both fields are required. The item and inquiry will both be marked as found/resolved.
+              </p>
             </div>
           </div>
         )}
@@ -832,7 +900,7 @@ export default function AssistantDashboard() {
                     type="text"
                     value={inquirySearch}
                     onChange={(e) => setInquirySearch(e.target.value)}
-                    placeholder="Search by inquiry number, phone, or description..."
+                    placeholder="Search by inquiry ID, number, phone, or description..."
                     className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                 </div>
@@ -859,6 +927,11 @@ export default function AssistantDashboard() {
                         <div className="flex-1">
                           <div className="flex items-center gap-3 mb-2">
                             <span className="font-semibold text-lg">#{inquiry.inquiry_number}</span>
+                            {inquiry.short_id && (
+                              <span className="px-2 py-1 text-xs font-mono font-semibold bg-blue-100 text-blue-800 rounded border border-blue-300">
+                                ID: {inquiry.short_id}
+                              </span>
+                            )}
                             <span className={`px-2 py-1 text-xs font-semibold rounded border ${getInquiryStatusColor(inquiry.status)}`}>
                               {inquiry.status}
                             </span>
@@ -940,6 +1013,13 @@ export default function AssistantDashboard() {
                         </span>
                       </div>
                     </div>
+                    {selectedInquiry.short_id && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Inquiry ID</label>
+                        <p className="text-gray-900 font-mono font-semibold text-lg">{selectedInquiry.short_id}</p>
+                        <p className="text-xs text-gray-500 mt-1">Use this ID when marking a matching item as found</p>
+                      </div>
+                    )}
                     {selectedInquiry.image_urls && selectedInquiry.image_urls.length > 0 && (
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">Images</label>

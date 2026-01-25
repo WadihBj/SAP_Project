@@ -28,6 +28,7 @@ export type InquiryStatus = "submitted" | "matched" | "resolved";
 export interface UserInquiry {
   id: string;
   inquiry_number: number;
+  short_id: string | null;
   created_at: string;
   phone_number: string;
   sms_text: string | null;
