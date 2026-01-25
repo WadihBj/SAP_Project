@@ -4,7 +4,8 @@ import { Search, Upload, Image as ImageIcon, Edit2, MessageSquare, CheckCircle2 
 
 export default function AssistantDashboard() {
   const [activeTab, setActiveTab] = useState<"items" | "inquiries">("items");
-  const [items, setItems] = useState<LostItem[]>([]);
+  type LostItemWithInquiry = LostItem & { inquiry_short_id?: string | null; inquiry_number?: number | null };
+  const [items, setItems] = useState<LostItemWithInquiry[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -26,6 +27,7 @@ export default function AssistantDashboard() {
   const [foundItemId, setFoundItemId] = useState<string | null>(null);
   const [founderName, setFounderName] = useState("");
   const [inquiryShortId, setInquiryShortId] = useState("");
+  const [foundInquiryIds, setFoundInquiryIds] = useState<Record<string, { short_id: string; inquiry_number: number | null }>>({});
   
   // Edit item state
   const [editingItem, setEditingItem] = useState<LostItem | null>(null);
@@ -52,7 +54,57 @@ export default function AssistantDashboard() {
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      setItems(data || []);
+      
+      // Hydrate inquiry info from localStorage and Supabase matches so we can show the inquiry short_id next to founder
+      const inquiryMap: Record<string, { short_id: string; inquiry_number: number | null }> = {};
+      const itemsWithInquiry = (data || []).map((item) => {
+        if (item.status === "found") {
+          const cached = localStorage.getItem(`inquiry_${item.id}`);
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              inquiryMap[item.id] = {
+                short_id: parsed.short_id,
+                inquiry_number: parsed.inquiry_number ?? null,
+              };
+              return {
+                ...item,
+                inquiry_short_id: parsed.short_id,
+                inquiry_number: parsed.inquiry_number ?? null,
+              };
+            } catch (e) {
+              // Ignore parse errors and fall back to item as-is
+            }
+          }
+        }
+        return item;
+      });
+      
+      // Pull inquiry ids from inquiry_matches for found items (fallback if cache not present)
+      const foundIds = itemsWithInquiry.filter((it) => it.status === "found").map((it) => it.id);
+      if (foundIds.length) {
+        const { data: matchData, error: matchError } = await supabase
+          .from("inquiry_matches")
+          .select("lost_item_id, user_inquiries(inquiry_number, short_id)")
+          .in("lost_item_id", foundIds);
+
+        if (!matchError && matchData) {
+          matchData.forEach((match: any) => {
+            const short_id = match.user_inquiries?.short_id;
+            const inquiry_number = match.user_inquiries?.inquiry_number ?? null;
+            if (short_id) {
+              inquiryMap[match.lost_item_id] = { short_id, inquiry_number };
+            }
+          });
+        } else if (matchError) {
+          console.warn("Error loading inquiry matches:", matchError);
+        }
+      }
+
+      setItems(itemsWithInquiry);
+      if (Object.keys(inquiryMap).length) {
+        setFoundInquiryIds(inquiryMap);
+      }
     } catch (error) {
       console.error("Error loading items:", error);
       alert("Error loading items. Please check your database connection.");
@@ -198,7 +250,9 @@ export default function AssistantDashboard() {
       return;
     }
 
-    if (!inquiryShortId.trim()) {
+    const normalizedShortId = inquiryShortId.trim().toUpperCase();
+
+    if (!normalizedShortId) {
       alert("Please enter the user inquiry ID");
       return;
     }
@@ -220,17 +274,17 @@ export default function AssistantDashboard() {
       const { data: inquiryData, error: inquiryError } = await supabase
         .from("user_inquiries")
         .select("id, inquiry_number, short_id")
-        .eq("short_id", inquiryShortId.trim().toUpperCase())
+        .eq("short_id", normalizedShortId)
         .single();
 
       if (inquiryError) {
         console.error("Error finding inquiry:", inquiryError);
-        alert(`Could not find inquiry with ID: ${inquiryShortId.trim().toUpperCase()}. Please check the ID and try again.`);
+        alert(`Could not find inquiry with ID: ${normalizedShortId}. Please check the ID and try again.`);
         return;
       }
 
       if (!inquiryData) {
-        alert(`Inquiry with ID ${inquiryShortId.trim().toUpperCase()} not found. Please check the ID and try again.`);
+        alert(`Inquiry with ID ${normalizedShortId} not found. Please check the ID and try again.`);
         return;
       }
 
@@ -249,6 +303,33 @@ export default function AssistantDashboard() {
         return;
       }
 
+      // Link the inquiry and item in inquiry_matches for future display
+      await supabase
+        .from("inquiry_matches")
+        .upsert({
+          inquiry_id: inquiryData.id,
+          lost_item_id: foundItemId,
+          confidence_score: 100,
+          ai_reasoning: "Manually marked as found",
+          assistant_approved: true,
+        });
+
+      // Cache the inquiry ID locally for display alongside founder
+      setFoundInquiryIds((prev) => ({
+        ...prev,
+        [foundItemId]: {
+          short_id: inquiryData.short_id || normalizedShortId,
+          inquiry_number: inquiryData.inquiry_number ?? null,
+        },
+      }));
+      localStorage.setItem(
+        `inquiry_${foundItemId}`,
+        JSON.stringify({
+          short_id: inquiryData.short_id || normalizedShortId,
+          inquiry_number: inquiryData.inquiry_number ?? null,
+        })
+      );
+
       setFoundItemId(null);
       setFounderName("");
       setInquiryShortId("");
@@ -264,7 +345,7 @@ export default function AssistantDashboard() {
         await loadInquiryMatches(selectedInquiry.id);
       }
       
-      alert(`Success! Item marked as found and inquiry ${inquiryShortId.trim().toUpperCase()} (Ref: #${inquiryData.inquiry_number}) has been marked as resolved.`);
+      alert(`Success! Item marked as found and inquiry ${normalizedShortId} (Ref: #${inquiryData.inquiry_number}) has been marked as resolved.`);
     } catch (error) {
       console.error("Error marking item as found:", error);
       alert("Error updating item. Please try again.");
@@ -689,16 +770,36 @@ export default function AssistantDashboard() {
                   <p className="text-sm text-gray-600 mb-3">{item.description}</p>
 
                   {item.status === "found" && item.founder_name && (
+                    (() => {
+                      const cachedInquiry = foundInquiryIds[item.id];
+                      const inquiryId = item.inquiry_short_id || cachedInquiry?.short_id;
+                      const inquiryNumber = item.inquiry_number ?? cachedInquiry?.inquiry_number;
+                      return (
                     <div className="mb-3 p-2 bg-green-100 rounded-md">
                       <p className="text-sm text-green-800">
                         <strong>Found by:</strong> {item.founder_name}
                       </p>
+                      {(inquiryId || inquiryNumber) && (
+                        <p className="text-xs text-green-700 mt-1 flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-green-800">Inquiry:</span>
+                          {inquiryId && (
+                            <span className="px-2 py-0.5 rounded border border-green-200 bg-white font-mono text-green-900">
+                              {inquiryId}
+                            </span>
+                          )}
+                          {inquiryNumber && (
+                            <span className="text-green-800">#{inquiryNumber}</span>
+                          )}
+                        </p>
+                      )}
                       {item.found_at && (
                         <p className="text-xs text-green-700 mt-1">
                           Found on: {new Date(item.found_at).toLocaleDateString()}
                         </p>
                       )}
                     </div>
+                      );
+                    })()
                   )}
 
                   {item.status !== "found" && (
