@@ -10,7 +10,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // Database types
-export type ItemStatus = "submitted" | "under-review" | "match found" | "lost" | "found";
+export type ItemStatus = "submitted" | "match found" | "found";
 
 export interface LostItem {
   id: string;
@@ -23,7 +23,7 @@ export interface LostItem {
   found_at: string | null;
 }
 
-export type InquiryStatus = "submitted" | "under-review" | "matched" | "resolved";
+export type InquiryStatus = "submitted" | "matched" | "resolved";
 
 export interface UserInquiry {
   id: string;

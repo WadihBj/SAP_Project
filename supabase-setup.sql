@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS lost_items (
   item_name TEXT NOT NULL,
   description TEXT NOT NULL,
   image_url TEXT,
-  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'under-review', 'match found', 'lost', 'found')),
+  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'match found', 'found')),
   founder_name TEXT,
   found_at TIMESTAMP WITH TIME ZONE
 );
@@ -21,7 +21,7 @@ BEGIN
   
   -- Add new constraint with all statuses
   ALTER TABLE lost_items ADD CONSTRAINT lost_items_status_check 
-    CHECK (status IN ('submitted', 'under-review', 'match found', 'lost', 'found'));
+    CHECK (status IN ('submitted', 'match found', 'found'));
   
   -- Update default status if needed
   ALTER TABLE lost_items ALTER COLUMN status SET DEFAULT 'submitted';
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS user_inquiries (
   extracted_description TEXT,
   extracted_category TEXT,
   extracted_type TEXT CHECK (extracted_type IN ('LOST', 'FOUND')),
-  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'under-review', 'matched', 'resolved')),
+  status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('submitted', 'matched', 'resolved')),
   ai_confidence REAL,
   assistant_notes TEXT,
   resolved_at TIMESTAMP WITH TIME ZONE

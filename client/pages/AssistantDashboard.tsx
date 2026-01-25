@@ -122,14 +122,18 @@ export default function AssistantDashboard() {
       }
 
       // Insert item into database (always try this even if image failed)
-      const { error } = await supabase.from("lost_items").insert({
+      const { data: insertedData, error } = await supabase.from("lost_items").insert({
         item_name: itemName,
         description: description,
         image_url: imageUrl,
         status: "submitted",
-      });
+      }).select();
 
       if (error) throw error;
+
+      // Get the inserted item ID
+      const insertedItem = insertedData && insertedData[0] ? insertedData[0] : null;
+      const itemId = insertedItem?.id;
 
       // Reset form
       setItemName("");
@@ -139,6 +143,39 @@ export default function AssistantDashboard() {
       
       // Reload items
       await loadItems();
+      
+      // Match the new item against existing inquiries
+      if (itemId) {
+        try {
+          const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:5000";
+          const response = await fetch(`${apiUrl}/api/match-item`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ item_id: itemId }),
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            console.log("Matching result:", result);
+            
+            // Reload inquiries if we're on that tab to show new matches
+            if (activeTab === "inquiries") {
+              await loadInquiries();
+              // If an inquiry is currently selected, reload its matches
+              if (selectedInquiry) {
+                await loadInquiryMatches(selectedInquiry.id);
+              }
+            }
+          } else {
+            console.warn("Failed to match item against inquiries:", await response.text());
+          }
+        } catch (matchError) {
+          console.error("Error matching item against inquiries:", matchError);
+          // Don't fail the upload if matching fails
+        }
+      }
       
       // Show success message with optional warning
       if (imageUploadWarning) {
@@ -175,6 +212,12 @@ export default function AssistantDashboard() {
       setFoundItemId(null);
       setFounderName("");
       await loadItems();
+      
+      // Reload matches if an inquiry is currently selected
+      if (selectedInquiry) {
+        await loadInquiryMatches(selectedInquiry.id);
+      }
+      
       alert("Item marked as found!");
     } catch (error) {
       console.error("Error marking item as found:", error);
@@ -273,6 +316,12 @@ export default function AssistantDashboard() {
       setEditImagePreview(null);
 
       await loadItems();
+      
+      // Reload matches if an inquiry is currently selected and item status changed to "found"
+      if (selectedInquiry && editStatus === "found") {
+        await loadInquiryMatches(selectedInquiry.id);
+      }
+      
       if (imageUploadWarning) {
         alert(`Item updated successfully!\n\n${imageUploadWarning}`);
       } else {
@@ -313,7 +362,39 @@ export default function AssistantDashboard() {
         .order("confidence_score", { ascending: false });
 
       if (error) throw error;
-      setInquiryMatches(data || []);
+      
+      // Filter out matches where the lost_item status is "found"
+      const filteredMatches = (data || []).filter(
+        (match) => match.lost_items?.status !== "found"
+      );
+      
+      setInquiryMatches(filteredMatches);
+      
+      // If all matches are filtered out (all items are "found"), clear the ai_confidence and update status
+      if (filteredMatches.length === 0 && (data || []).length > 0) {
+        // All matches were filtered out, update inquiry to clear confidence and reset status
+        await supabase
+          .from("user_inquiries")
+          .update({ 
+            ai_confidence: null,
+            status: "submitted"
+          })
+          .eq("id", inquiryId);
+        
+        // Update selected inquiry if it's the current one
+        if (selectedInquiry && selectedInquiry.id === inquiryId) {
+          setSelectedInquiry({
+            ...selectedInquiry,
+            ai_confidence: null,
+            status: "submitted"
+          });
+        }
+        
+        // Reload inquiries to reflect the change
+        if (activeTab === "inquiries") {
+          await loadInquiries();
+        }
+      }
     } catch (error) {
       console.error("Error loading matches:", error);
     }
@@ -357,14 +438,10 @@ export default function AssistantDashboard() {
     switch (status) {
       case "submitted":
         return "bg-blue-100 text-blue-800 border-blue-300";
-      case "under-review":
-        return "bg-yellow-100 text-yellow-800 border-yellow-300";
       case "match found":
         return "bg-purple-100 text-purple-800 border-purple-300";
       case "found":
         return "bg-green-100 text-green-800 border-green-300";
-      case "lost":
-        return "bg-gray-100 text-gray-800 border-gray-300";
       default:
         return "bg-gray-100 text-gray-800 border-gray-300";
     }
@@ -374,8 +451,6 @@ export default function AssistantDashboard() {
     switch (status) {
       case "submitted":
         return "bg-blue-100 text-blue-800 border-blue-300";
-      case "under-review":
-        return "bg-yellow-100 text-yellow-800 border-yellow-300";
       case "matched":
         return "bg-purple-100 text-purple-800 border-purple-300";
       case "resolved":
@@ -675,9 +750,7 @@ export default function AssistantDashboard() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   >
                     <option value="submitted">Submitted</option>
-                    <option value="under-review">Under Review</option>
                     <option value="match found">Match Found</option>
-                    <option value="lost">Lost</option>
                     <option value="found">Found</option>
                   </select>
                 </div>
@@ -789,7 +862,7 @@ export default function AssistantDashboard() {
                             <span className={`px-2 py-1 text-xs font-semibold rounded border ${getInquiryStatusColor(inquiry.status)}`}>
                               {inquiry.status}
                             </span>
-                            {inquiry.ai_confidence && (
+                            {inquiry.ai_confidence && inquiry.status === "matched" && (
                               <span className="text-sm text-gray-600">
                                 AI Confidence: {inquiry.ai_confidence.toFixed(1)}%
                               </span>

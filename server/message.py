@@ -15,9 +15,9 @@ app = Flask(__name__)
 CORS(app)
 
 # Environment variables
-TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
+TWILIO_ACCOUNT_SID = "ACfc85ee69ba8d995855ca80ad1ea313b1"
+TWILIO_AUTH_TOKEN = "b17e89c9c6a6113d3b3dddf9adec53cf"
+GEMINI_API_KEY = "AIzaSyCm0j9WZy04FGcNZerH69_vVqT-gdA6UCg"
 SUPABASE_URL = "https://crlqdhmuzdndlwntckya.supabase.co/"
 SUPABASE_KEY = "sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq"
 # SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -180,8 +180,8 @@ def find_matches_with_ai(inquiry_data: Dict, inquiry_id: str) -> List[Dict]:
         return []
     
     try:
-        # Get all lost items from database
-        response = supabase.table("lost_items").select("*").execute()
+        # Get all lost items from database, excluding items that are already "found"
+        response = supabase.table("lost_items").select("*").neq("status", "found").execute()
         lost_items = response.data if response.data else []
         
         if not lost_items:
@@ -271,6 +271,132 @@ Return at most 5 matches.
         
     except Exception as e:
         print(f"Error in AI matching: {e}")
+        return []
+
+
+def find_inquiries_for_item(lost_item: Dict) -> List[Dict]:
+    """Use AI to match a new lost item against existing inquiries."""
+    if not supabase or not gemini_client:
+        return []
+    
+    try:
+        # Get all inquiries that don't have status "resolved"
+        response = supabase.table("user_inquiries").select("*").neq("status", "resolved").execute()
+        inquiries = response.data if response.data else []
+        
+        if not inquiries:
+            return []
+        
+        # Prepare inquiries for AI comparison
+        inquiries_text = "\n\n".join([
+            f"Inquiry {idx + 1}:\n"
+            f"Title: {inq.get('extracted_title', 'N/A')}\n"
+            f"Description: {inq.get('extracted_description', inq.get('sms_text', 'N/A'))}\n"
+            f"Category: {inq.get('extracted_category', 'N/A')}\n"
+            f"Type: {inq.get('extracted_type', 'N/A')}\n"
+            f"Images: {', '.join(inq.get('image_urls', []) or [])}"
+            for idx, inq in enumerate(inquiries)
+        ])
+        
+        item_text = f"""
+New Lost Item:
+Name: {lost_item.get('item_name', 'N/A')}
+Description: {lost_item.get('description', 'N/A')}
+Image: {lost_item.get('image_url', 'No image')}
+"""
+        
+        prompt = f"""
+You are a lost and found matching system. Compare the new lost item against existing user inquiries.
+
+{item_text}
+
+Existing User Inquiries:
+{inquiries_text}
+
+For each inquiry, determine:
+1. How similar is it to the new lost item? (0-100 score)
+2. Why is it a match or not? (brief reasoning)
+
+Return ONLY a JSON array of objects, each with:
+- inquiry_index: The index number (1-based) of the inquiry
+- confidence_score: A number between 0-100 indicating match confidence
+- reasoning: Brief explanation of why this is/isn't a match
+
+Only include inquiries with confidence_score >= 30. Sort by confidence_score descending.
+Return at most 5 matches.
+"""
+        
+        ai_response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "temperature": 0.3,
+            },
+        )
+        
+        raw = (ai_response.text or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw).strip()
+        matches = json.loads(raw)
+        
+        if not isinstance(matches, list):
+            matches = [matches] if matches else []
+        
+        # Store matches in database
+        match_records = []
+        for match in matches:
+            inquiry_idx = match.get('inquiry_index', 1) - 1  # Convert to 0-based
+            if 0 <= inquiry_idx < len(inquiries):
+                inquiry = inquiries[inquiry_idx]
+                
+                # Check if match already exists
+                existing_match = supabase.table("inquiry_matches").select("*").eq(
+                    "inquiry_id", inquiry['id']
+                ).eq("lost_item_id", lost_item['id']).execute()
+                
+                if existing_match.data and len(existing_match.data) > 0:
+                    # Match already exists, skip
+                    continue
+                
+                # Insert match record
+                match_data = {
+                    "inquiry_id": inquiry['id'],
+                    "lost_item_id": lost_item['id'],
+                    "confidence_score": float(match.get('confidence_score', 0)),
+                    "ai_reasoning": match.get('reasoning', 'No reasoning provided')
+                }
+                
+                try:
+                    result = supabase.table("inquiry_matches").insert(match_data).execute()
+                    if result.data:
+                        match_records.append({
+                            **match_data,
+                            "inquiry": inquiry
+                        })
+                        
+                        # Update inquiry status and confidence if matches found
+                        if inquiry.get('status') == 'submitted':
+                            # Calculate average confidence for this inquiry
+                            all_matches = supabase.table("inquiry_matches").select(
+                                "confidence_score"
+                            ).eq("inquiry_id", inquiry['id']).execute()
+                            
+                            if all_matches.data:
+                                avg_confidence = sum(
+                                    m.get('confidence_score', 0) for m in all_matches.data
+                                ) / len(all_matches.data)
+                                
+                                supabase.table("user_inquiries").update({
+                                    "ai_confidence": avg_confidence,
+                                    "status": "matched"
+                                }).eq("id", inquiry['id']).execute()
+                except Exception as e:
+                    print(f"Error storing match for inquiry {inquiry['id']}: {e}")
+        
+        return match_records
+        
+    except Exception as e:
+        print(f"Error in AI matching for new item: {e}")
         return []
 
 
@@ -384,12 +510,12 @@ def get_inquiries():
     
     try:
         status = request.args.get('status', None)
-        query = supabase.table("user_inquiries").select("*").order("created_at", desc=True)
+        query = supabase.table("user_inquiries").select("*")
         
         if status:
             query = query.eq("status", status)
         
-        result = query.execute()
+        result = query.order("created_at", desc=True).execute()
         return jsonify(result.data if result.data else [])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -410,15 +536,60 @@ def get_inquiry_by_number(inquiry_number: int):
         
         inquiry = inquiry_result.data[0]
         
-        # Get matches
+        # Get matches, filtering out items with status "found"
         matches_result = supabase.table("inquiry_matches").select(
             "*, lost_items(*)"
-        ).eq("inquiry_id", inquiry['id']).order("confidence_score", desc=True).execute()
+        ).eq("inquiry_id", inquiry['id']).order("confidence_score", desc=True)
         
-        inquiry['matches'] = matches_result.data if matches_result.data else []
+        # Filter out matches where the lost_item status is "found"
+        matches = matches_result.data if matches_result.data else []
+        filtered_matches = [
+            match for match in matches 
+            if match.get('lost_items', {}).get('status') != 'found'
+        ]
+        
+        inquiry['matches'] = filtered_matches
         
         return jsonify(inquiry)
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/match-item", methods=['POST'])
+def match_item():
+    """Match a newly uploaded item against existing inquiries."""
+    if not supabase:
+        return jsonify({"error": "Supabase not configured"}), 500
+    
+    try:
+        data = request.get_json()
+        item_id = data.get('item_id')
+        
+        if not item_id:
+            return jsonify({"error": "item_id is required"}), 400
+        
+        # Get the lost item
+        item_result = supabase.table("lost_items").select("*").eq("id", item_id).execute()
+        
+        if not item_result.data or len(item_result.data) == 0:
+            return jsonify({"error": "Item not found"}), 404
+        
+        lost_item = item_result.data[0]
+        
+        # Skip if item is already "found"
+        if lost_item.get('status') == 'found':
+            return jsonify({"message": "Item is already marked as found, skipping matching"}), 200
+        
+        # Find matching inquiries
+        matches = find_inquiries_for_item(lost_item)
+        
+        return jsonify({
+            "message": f"Found {len(matches)} matching inquiries",
+            "matches": len(matches)
+        }), 200
+        
+    except Exception as e:
+        print(f"Error matching item: {e}")
         return jsonify({"error": str(e)}), 500
 
 
