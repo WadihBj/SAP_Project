@@ -20,8 +20,8 @@ CORS(app)
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") 
-SUPABASE_URL = "https://crlqdhmuzdndlwntckya.supabase.co/"
-SUPABASE_KEY = "sb_publishable_v1KbiYURT2DJcaFKEU2Mjg_U9kwuapq"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_KEY")
 
 # Initialize clients
 if not GEMINI_API_KEY:
